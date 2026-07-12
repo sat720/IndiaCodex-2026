@@ -1,0 +1,18 @@
+name = "trusttrail/escrow-validator"
+version = "0.0.0"
+compiler = "v1.1.23"
+plutus = "v3"
+license = "Apache-2.0"
+description = "Aiken contracts for project 'trusttrail/escrow-validator'"
+
+[repository]
+user = "trusttrail"
+project = "escrow-validator"
+platform = "github"
+
+[[dependencies]]
+name = "aiken-lang/stdlib"
+version = "main"
+source = "github"
+
+[config]
