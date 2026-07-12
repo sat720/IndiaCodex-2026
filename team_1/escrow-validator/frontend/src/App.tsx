@@ -24,7 +24,7 @@ class PreprodProvider {
       coinsPerUtxoByte: 4310n,
       collateralPercentage: 150,
       maxCollateralInputs: 3,
-      costModels: {},
+      costModels: { PlutusV1: {}, PlutusV2: {} },
       minfeeRefscriptCostPerByte: 15,
     };
   }
