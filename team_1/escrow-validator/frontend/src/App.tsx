@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Lucid } from 'lucid-cardano';
 
 // Minimal Cardano Preprod provider — no API key needed.
@@ -52,8 +52,22 @@ export default function App() {
   const [amount, setAmount] = useState('');
 
   // Escrow State
-  const [activeEscrows, setActiveEscrows] = useState<any[]>([]);
-  const [completedNFTs, setCompletedNFTs] = useState<any[]>([]);
+  const [activeEscrows, setActiveEscrows] = useState<any[]>(() => {
+    const saved = localStorage.getItem('trusttrail_active_escrows');
+    return saved ? JSON.parse(saved) : [];
+  });
+  const [completedNFTs, setCompletedNFTs] = useState<any[]>(() => {
+    const saved = localStorage.getItem('trusttrail_completed_nfts');
+    return saved ? JSON.parse(saved) : [];
+  });
+
+  useEffect(() => {
+    localStorage.setItem('trusttrail_active_escrows', JSON.stringify(activeEscrows));
+  }, [activeEscrows]);
+
+  useEffect(() => {
+    localStorage.setItem('trusttrail_completed_nfts', JSON.stringify(completedNFTs));
+  }, [completedNFTs]);
 
   // TX Status
   const [txLoading, setTxLoading] = useState(false);
