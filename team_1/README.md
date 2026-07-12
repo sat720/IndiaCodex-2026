@@ -82,7 +82,7 @@ Cardano Preprod Testnet
 | **Reputation NFTs** | Grid of minted NFT receipts with escrow details |
 
 ### Project Demo Video
-_Coming soon — recorded demo walkthrough_
+🔗 **[Watch Project Demo Video](https://drive.google.com/file/d/1yuldoL9LTJR5BFO3UAMUPtBajGcoLcLE/view?usp=sharing)**
 
 ---
 
@@ -119,6 +119,8 @@ Open `http://localhost:5173` with Lace wallet installed (set to Preprod testnet)
 | Name | Role |
 |---|---|
 | Satvik | Full Stack Developer & Smart Contract Engineer |
+| Jayant Acharya | Developer |
+| Rishil | Developer |
 
 ---
 
