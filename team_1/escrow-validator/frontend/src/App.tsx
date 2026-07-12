@@ -1,65 +1,179 @@
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 import { Lucid } from 'lucid-cardano';
+
+// Minimal Cardano Preprod provider — no API key needed.
+// Protocol params are hardcoded (stable values for Preprod testnet).
+// UTxOs and submission are handled by the Lace wallet CIP-30 API.
+class PreprodProvider {
+  api: any;
+  constructor(api: any) {
+    this.api = api;
+  }
+  async getProtocolParameters() {
+    return {
+      minFeeA: 44,
+      minFeeB: 155381,
+      maxTxSize: 16384,
+      maxValSize: 5000,
+      keyDeposit: 2000000n,
+      poolDeposit: 500000000n,
+      priceMem: 0.0577,
+      priceStep: 0.0000721,
+      maxTxExMem: 14000000n,
+      maxTxExSteps: 10000000000n,
+      coinsPerUtxoByte: 4310n,
+      collateralPercentage: 150,
+      maxCollateralInputs: 3,
+      costModels: {},
+      minfeeRefscriptCostPerByte: 15,
+    };
+  }
+  async getUtxos() { return []; }
+  async getUtxosWithUnit() { return []; }
+  async getUtxoByUnit(): Promise<any> { throw new Error('Not implemented'); }
+  async getUtxosByOutRef() { return []; }
+  async getDelegation() { return { poolId: null, rewards: 0n }; }
+  async getDatum(): Promise<any> { throw new Error('Not implemented'); }
+  async awaitTx() { return true; }
+  async submitTx(tx: string): Promise<string> {
+    return await this.api.submitTx(tx);
+  }
+}
 
 export default function App() {
   const [lucid, setLucid] = useState<Lucid | null>(null);
   const [address, setAddress] = useState<string>('');
   const [balance, setBalance] = useState<string>('0.00');
-  
+  const [connecting, setConnecting] = useState(false);
+  const [connectError, setConnectError] = useState<string | null>(null);
+
   // Form State
   const [sellerAddr, setSellerAddr] = useState('');
   const [amount, setAmount] = useState('');
-  
+
   // Escrow State
   const [activeEscrows, setActiveEscrows] = useState<any[]>([]);
   const [completedNFTs, setCompletedNFTs] = useState<any[]>([]);
 
+  // TX Status
+  const [txLoading, setTxLoading] = useState(false);
+  const [txHash, setTxHash] = useState<string | null>(null);
+  const [txError, setTxError] = useState<string | null>(null);
+
   const connectWallet = async () => {
+    setConnecting(true);
+    setConnectError(null);
     try {
       // @ts-ignore
       if (!window.cardano || !window.cardano.lace) {
-        alert("Lace wallet not detected. Please install the Lace browser extension.");
+        setConnectError('Lace wallet not detected. Install the Lace browser extension.');
         return;
       }
       // @ts-ignore
       const api = await window.cardano.lace.enable();
-      const l = await Lucid.new(undefined, "Preprod");
+      const l = await Lucid.new(new PreprodProvider(api) as any, 'Preprod');
       l.selectWallet(api);
-      
+
       const addr = await l.wallet.address();
       setAddress(addr);
-      
+
       const utxos = await l.wallet.getUtxos();
       const lovelace = utxos.reduce((acc, utxo) => acc + utxo.assets.lovelace, 0n);
-      setBalance((Number(lovelace) / 1000000).toFixed(2));
-      
+      setBalance((Number(lovelace) / 1_000_000).toFixed(2));
+
       setLucid(l);
-    } catch (err) {
-      console.error("Wallet connection failed:", err);
+    } catch (err: any) {
+      const msg = err?.message ?? String(err);
+      setConnectError(msg.includes('user declined') ? 'You declined the wallet connection.' : msg);
+      console.error('Wallet connection failed:', err);
+    } finally {
+      setConnecting(false);
     }
   };
 
-  const handleCreateEscrow = () => {
-    if (!amount || !sellerAddr) return;
-    const newEscrow = {
-      id: Math.random().toString(36).substring(2, 10),
-      seller: sellerAddr,
-      amount: amount,
-      status: 'LOCKED'
-    };
-    setActiveEscrows([...activeEscrows, newEscrow]);
-    setSellerAddr('');
-    setAmount('');
+
+  const handleCreateEscrow = async () => {
+    if (!amount || !sellerAddr || !lucid) return;
+    if (sellerAddr.length < 50) {
+      setTxError("Please enter a valid full Cardano testnet address (addr_test1...).");
+      return;
+    }
+    setTxError(null);
+    setTxHash(null);
+    setTxLoading(true);
+    try {
+      const amountLovelace = BigInt(Math.floor(parseFloat(amount) * 1_000_000));
+
+      // Build a real ADA transfer to the seller address.
+      // This demonstrates the fund movement on-chain and is verifiable on Cardanoscan.
+      // In production with Blockfrost, funds go to the Escrow Validator contract address instead.
+      const tx = await lucid
+        .newTx()
+        .payToAddress(sellerAddr, { lovelace: amountLovelace })
+        .complete();
+
+      const signed = await tx.sign().complete();
+      const hash = await signed.submit();
+
+      setTxHash(hash);
+      setActiveEscrows(prev => [...prev, {
+        id: hash.slice(0, 8),
+        seller: sellerAddr,
+        amount: amount,
+        txHash: hash,
+        utxo: null,
+      }]);
+      setSellerAddr('');
+      setAmount('');
+    } catch (err: any) {
+      // Surface a clean message
+      const msg = err?.message ?? String(err);
+      setTxError(msg.includes('Not enough') || msg.includes('INPUT_LIMIT_EXCEEDED')
+        ? 'Not enough ADA in wallet. Try a smaller amount.'
+        : msg);
+      console.error(err);
+    } finally {
+      setTxLoading(false);
+    }
   };
 
-  const handleRelease = (id: string, escrowAmount: string) => {
-    // Move from active to completed and "mint" NFT
-    setActiveEscrows(activeEscrows.filter(e => e.id !== id));
-    setCompletedNFTs([...completedNFTs, {
-      id,
-      name: `Escrow${id.toUpperCase()}_Completed`,
-      amount: escrowAmount
-    }]);
+
+  const handleRelease = async (id: string, escrowAmount: string, utxo?: any) => {
+    if (!lucid) return;
+    setTxError(null);
+    setTxHash(null);
+
+    // If we have a real UTxO (from blockchain), use the service
+    if (utxo) {
+      setTxLoading(true);
+      try {
+        // Release payment — just move escrow to completed state in demo mode
+        // (real UTxO spending requires Blockfrost for chain queries)
+        await new Promise(r => setTimeout(r, 1000)); // simulate tx
+        const hash = 'demo_release_' + id;
+        setTxHash(hash);
+        setActiveEscrows(prev => prev.filter(e => e.id !== id));
+        setCompletedNFTs(prev => [...prev, {
+          id,
+          name: `Escrow${id.toUpperCase()}_Completed`,
+          amount: escrowAmount,
+          txHash: hash,
+        }]);
+      } catch (err: any) {
+        setTxError(err?.message ?? 'Release failed. Check console.');
+        console.error(err);
+      } finally {
+        setTxLoading(false);
+      }
+    } else {
+      // Demo mode: optimistically mark as released (UTxO not yet fetched)
+      setActiveEscrows(prev => prev.filter(e => e.id !== id));
+      setCompletedNFTs(prev => [...prev, {
+        id,
+        name: `Escrow${id.toUpperCase()}_Completed`,
+        amount: escrowAmount,
+      }]);
+    }
   };
 
   if (!lucid) {
@@ -76,10 +190,22 @@ export default function App() {
           <p className="text-zinc-400 mb-10 leading-relaxed">The decentralized escrow protocol for Cardano. Connect your Lace wallet to continue.</p>
           <button 
             onClick={connectWallet}
-            className="w-full bg-zinc-100 hover:bg-white text-zinc-950 font-bold py-4 rounded-xl shadow-[0_0_20px_rgba(255,255,255,0.1)] transition-all transform hover:scale-[1.02] active:scale-[0.98]"
+            disabled={connecting}
+            className="w-full bg-zinc-100 hover:bg-white disabled:bg-zinc-700 disabled:text-zinc-400 disabled:cursor-not-allowed text-zinc-950 font-bold py-4 rounded-xl shadow-[0_0_20px_rgba(255,255,255,0.1)] transition-all transform hover:scale-[1.02] active:scale-[0.98]"
           >
-            Connect Lace Wallet
+            {connecting ? (
+              <span className="flex items-center justify-center gap-2">
+                <svg className="animate-spin w-4 h-4" fill="none" viewBox="0 0 24 24">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z"/>
+                </svg>
+                Connecting...
+              </span>
+            ) : 'Connect Lace Wallet'}
           </button>
+          {connectError && (
+            <p className="mt-4 text-sm text-rose-400 text-center">{connectError}</p>
+          )}
         </div>
       </div>
     );
@@ -130,7 +256,16 @@ export default function App() {
               
               <div className="space-y-5">
                 <div>
-                  <label className="block text-xs font-bold text-zinc-400 uppercase tracking-wider mb-2">Seller Address</label>
+                  <div className="flex justify-between items-center mb-2">
+                    <label className="block text-xs font-bold text-zinc-400 uppercase tracking-wider">Seller Address</label>
+                    <button
+                      type="button"
+                      onClick={() => setSellerAddr(address)}
+                      className="text-xs text-cyan-400 hover:text-cyan-300 font-semibold transition-colors"
+                    >
+                      + Use My Address (Demo)
+                    </button>
+                  </div>
                   <input 
                     type="text" 
                     value={sellerAddr}
@@ -138,6 +273,9 @@ export default function App() {
                     placeholder="addr_test1..." 
                     className="w-full bg-zinc-950/50 border border-zinc-800 rounded-xl px-4 py-3.5 text-sm text-zinc-200 focus:outline-none focus:border-emerald-500/50 focus:ring-1 focus:ring-emerald-500/50 transition-all font-mono"
                   />
+                  {sellerAddr && sellerAddr.length < 50 && (
+                    <p className="text-xs text-amber-500 mt-1">⚠ Address looks too short. Paste a full addr_test1... address.</p>
+                  )}
                 </div>
                 
                 <div>
@@ -156,10 +294,40 @@ export default function App() {
 
                 <button 
                   onClick={handleCreateEscrow}
-                  className="w-full mt-4 bg-emerald-500 hover:bg-emerald-400 text-zinc-950 font-bold py-3.5 rounded-xl transition-all shadow-[0_0_15px_rgba(16,185,129,0.2)] hover:shadow-[0_0_25px_rgba(16,185,129,0.4)]"
+                  disabled={txLoading}
+                  className="w-full mt-4 bg-emerald-500 hover:bg-emerald-400 disabled:bg-emerald-900 disabled:text-emerald-600 disabled:cursor-not-allowed text-zinc-950 font-bold py-3.5 rounded-xl transition-all shadow-[0_0_15px_rgba(16,185,129,0.2)] hover:shadow-[0_0_25px_rgba(16,185,129,0.4)]"
                 >
-                  Lock Funds
+                  {txLoading ? (
+                    <span className="flex items-center justify-center gap-2">
+                      <svg className="animate-spin w-4 h-4" fill="none" viewBox="0 0 24 24">
+                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
+                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z"/>
+                      </svg>
+                      Waiting for Signature...
+                    </span>
+                  ) : 'Lock Funds'}
                 </button>
+
+                {/* TX Feedback */}
+                {txHash && (
+                  <div className="mt-3 p-3 bg-emerald-950/40 border border-emerald-900/50 rounded-xl">
+                    <p className="text-xs text-emerald-400 font-bold mb-1">✓ Transaction Submitted!</p>
+                    <a
+                      href={`https://preprod.cardanoscan.io/transaction/${txHash}`}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="text-xs text-emerald-500/80 font-mono break-all hover:underline"
+                    >
+                      {txHash.slice(0, 20)}...{txHash.slice(-10)}
+                    </a>
+                  </div>
+                )}
+                {txError && (
+                  <div className="mt-3 p-3 bg-rose-950/40 border border-rose-900/50 rounded-xl">
+                    <p className="text-xs text-rose-400 font-bold mb-1">✗ Error</p>
+                    <p className="text-xs text-rose-500/80">{txError}</p>
+                  </div>
+                )}
               </div>
             </div>
           </div>
@@ -185,8 +353,9 @@ export default function App() {
                       To: {escrow.seller}
                     </div>
                     <button 
-                      onClick={() => handleRelease(escrow.id, escrow.amount)}
-                      className="w-full bg-cyan-950 hover:bg-cyan-900 text-cyan-400 border border-cyan-800/50 font-bold py-2.5 rounded-xl transition-all text-sm shadow-[0_0_10px_rgba(6,182,212,0.1)] hover:shadow-[0_0_15px_rgba(6,182,212,0.2)]"
+                      onClick={() => handleRelease(escrow.id, escrow.amount, escrow.utxo)}
+                      disabled={txLoading}
+                      className="w-full bg-cyan-950 hover:bg-cyan-900 disabled:opacity-50 disabled:cursor-not-allowed text-cyan-400 border border-cyan-800/50 font-bold py-2.5 rounded-xl transition-all text-sm shadow-[0_0_10px_rgba(6,182,212,0.1)] hover:shadow-[0_0_15px_rgba(6,182,212,0.2)]"
                     >
                       Approve & Release Funds
                     </button>
